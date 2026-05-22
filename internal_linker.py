@@ -115,6 +115,16 @@ def get_pet_category(text: str) -> set:
     return categories
 
 
+def get_primary_species(title: str, slug: str) -> str | None:
+    """Determine the primary species from title/slug only (not full content)."""
+    text = (title + " " + slug.replace("-", " ")).lower()
+    for species in ["cat", "dog", "fish", "bird", "rabbit", "hamster", "reptile"]:
+        terms = PET_CATEGORIES[species]
+        if any(t in text for t in terms):
+            return species
+    return None
+
+
 def get_topics(text: str) -> set:
     text_lower = text.lower()
     return {kw for kw in TOPIC_KEYWORDS if kw in text_lower}
@@ -122,6 +132,11 @@ def get_topics(text: str) -> set:
 
 def compute_relevance(page_a: dict, page_b: dict) -> float:
     if page_a["url"].rstrip("/") == page_b["url"].rstrip("/"):
+        return 0.0
+
+    sp_a = page_a.get("primary_species")
+    sp_b = page_b.get("primary_species")
+    if sp_a and sp_b and sp_a != sp_b:
         return 0.0
 
     shared_phrases = page_a["key_phrases"] & page_b["key_phrases"]
@@ -172,6 +187,7 @@ async def build_content_map() -> list:
                         "type": endpoint.rstrip("s"),
                         "key_phrases": key_phrases,
                         "categories": get_pet_category(full_text),
+                        "primary_species": get_primary_species(title, slug),
                         "topics": get_topics(full_text),
                         "existing_links": link_parser.hrefs,
                         "content_html": content,
