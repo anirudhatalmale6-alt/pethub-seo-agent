@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PetHub SEO Agent</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+.header{background:linear-gradient(135deg,#1e293b,#0f172a);border-bottom:1px solid #334155;padding:16px 24px;display:flex;align-items:center;justify-content:space-between}
+.header h1{font-size:22px;font-weight:700;color:#f1f5f9}
+.header h1 span{color:#22c55e}
+.header .controls{display:flex;gap:8px;align-items:center}
+.back-link{color:#3b82f6;text-decoration:none;font-size:13px;margin-right:16px}
+.back-link:hover{text-decoration:underline}
+.container{max-width:1400px;margin:0 auto;padding:20px}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:24px}
+.stat-card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:20px;transition:border-color .2s}
+.stat-card:hover{border-color:#22c55e}
+.stat-card .label{font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+.stat-card .value{font-size:28px;font-weight:700;color:#f1f5f9}
+.stat-card .value.green{color:#22c55e}
+.stat-card .value.yellow{color:#eab308}
+.stat-card .value.red{color:#ef4444}
+.stat-card .value.blue{color:#3b82f6}
+.btn{padding:8px 18px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:all .2s}
+.btn-primary{background:#22c55e;color:#fff}
+.btn-primary:hover{background:#16a34a}
+.btn-primary:disabled{background:#334155;color:#64748b;cursor:not-allowed}
+.section{margin-bottom:24px}
+.section h2{font-size:18px;font-weight:600;color:#f1f5f9;margin-bottom:16px}
+.results-table{width:100%;border-collapse:collapse;background:#1e293b;border:1px solid #334155;border-radius:12px;overflow:hidden}
+.results-table th{text-align:left;padding:12px;font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid #334155;background:#0f172a}
+.results-table td{padding:12px;font-size:13px;border-bottom:1px solid #1e293b;color:#e2e8f0}
+.results-table tr:hover td{background:rgba(59,130,246,.05)}
+.results-table tr.clickable{cursor:pointer}
+.score-badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700}
+.score-badge.high{background:rgba(34,197,94,.15);color:#22c55e}
+.score-badge.medium{background:rgba(234,179,8,.15);color:#eab308}
+.score-badge.low{background:rgba(239,68,68,.15);color:#ef4444}
+.issue-tag{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;margin:2px}
+.issue-tag.error{background:rgba(239,68,68,.12);color:#ef4444}
+.issue-tag.warning{background:rgba(234,179,8,.12);color:#eab308}
+.empty{text-align:center;padding:60px;color:#64748b;font-size:14px}
+.detail-modal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);z-index:100;overflow-y:auto}
+.detail-content{background:#1e293b;border:1px solid #334155;border-radius:16px;max-width:800px;margin:40px auto;padding:24px}
+.detail-content h3{font-size:18px;margin-bottom:12px;color:#f1f5f9}
+.detail-content .close-btn{float:right;background:none;border:none;color:#94a3b8;font-size:24px;cursor:pointer;padding:4px 8px}
+.detail-content .close-btn:hover{color:#f1f5f9}
+.detail-list{list-style:none;padding:0}
+.detail-list li{padding:8px 12px;border-bottom:1px solid #0f172a;font-size:13px;display:flex;gap:8px;align-items:start}
+.detail-list li .icon{font-size:14px;flex-shrink:0;margin-top:1px}
+.detail-meta{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0}
+.detail-meta .item{background:#0f172a;border-radius:8px;padding:10px}
+.detail-meta .item .lbl{font-size:11px;color:#94a3b8;margin-bottom:4px}
+.detail-meta .item .val{font-size:13px;color:#e2e8f0;word-break:break-all}
+.progress-bar{background:#0f172a;border-radius:8px;height:8px;overflow:hidden;margin-top:8px}
+.progress-bar .fill{height:100%;border-radius:8px;transition:width .5s}
+.audit-running{background:rgba(59,130,246,.1);border:1px solid rgba(59,130,246,.3);border-radius:12px;padding:20px;text-align:center;margin-bottom:24px}
+.audit-running .spinner{display:inline-block;width:20px;height:20px;border:3px solid #334155;border-top-color:#3b82f6;border-radius:50%;animation:spin 1s linear infinite;margin-right:10px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+.tabs{display:flex;gap:4px;margin-bottom:20px;background:#1e293b;padding:4px;border-radius:10px;width:fit-content}
+.tab{padding:8px 20px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:500;color:#94a3b8;background:transparent;transition:all .2s}
+.tab.active{background:#22c55e;color:#fff}
+.tab:hover:not(.active){color:#e2e8f0}
+.panel{display:none}
+.panel.active{display:block}
+.history-chart{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:20px;min-height:200px}
+.history-bars{display:flex;align-items:flex-end;gap:8px;height:160px;padding-top:20px}
+.history-bar{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px}
+.history-bar .bar{width:100%;max-width:40px;border-radius:4px 4px 0 0;transition:height .3s}
+.history-bar .bar-label{font-size:10px;color:#64748b}
+.history-bar .bar-value{font-size:11px;color:#e2e8f0;font-weight:600}
+</style>
+</head>
+<body>
+<div class="header">
+  <div style="display:flex;align-items:center;gap:16px">
+    <a href="/agents/" class="back-link">Back to Manager</a>
+    <h1><span>SEO</span> Agent</h1>
+  </div>
+  <div class="controls">
+    <span id="status-text" style="font-size:13px;color:#94a3b8">Loading...</span>
+    <button class="btn btn-primary" id="run-btn" onclick="runAudit()">Run Audit Now</button>
+  </div>
+</div>
+<div class="container">
+  <div id="running-banner" class="audit-running" style="display:none">
+    <span class="spinner"></span>
+    <span style="font-size:14px;color:#3b82f6">SEO audit is running... This may take a few minutes.</span>
+  </div>
+  <div class="stats-grid" id="stats-grid">
+    <div class="stat-card"><div class="label">Pages Audited</div><div class="value" id="s-pages">-</div></div>
+    <div class="stat-card"><div class="label">Average Score</div><div class="value" id="s-score">-</div></div>
+    <div class="stat-card"><div class="label">Issues</div><div class="value red" id="s-issues">-</div></div>
+    <div class="stat-card"><div class="label">Warnings</div><div class="value yellow" id="s-warnings">-</div></div>
+    <div class="stat-card"><div class="label">Perfect Pages</div><div class="value green" id="s-perfect">-</div></div>
+    <div class="stat-card"><div class="label">Last Audit</div><div class="value blue" id="s-last" style="font-size:16px">-</div></div>
+  </div>
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('overview',this)">Overview</button>
+    <button class="tab" onclick="showTab('issues',this)">All Issues</button>
+    <button class="tab" onclick="showTab('history',this)">History</button>
+  </div>
+  <div id="overview" class="panel active"></div>
+  <div id="issues" class="panel"></div>
+  <div id="history" class="panel"></div>
+</div>
+<div class="detail-modal" id="detail-modal" onclick="if(event.target===this)closeDetail()">
+  <div class="detail-content" id="detail-content"></div>
+</div>
+<script>
+const base=window.location.pathname.replace(/\/$/,'');
+const API=base+'/api';
+let pollInterval=null;
+
+function showTab(id,btn){
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  btn.classList.add('active');
+}
+
+function scoreClass(s){return s>=80?'high':s>=50?'medium':'low'}
+function scoreColor(s){return s>=80?'#22c55e':s>=50?'#eab308':'#ef4444'}
+
+function timeAgo(d){
+  if(!d)return'Never';
+  const s=Math.floor((Date.now()-new Date(d))/1000);
+  if(s<60)return s+'s ago';
+  if(s<3600)return Math.floor(s/60)+'m ago';
+  if(s<86400)return Math.floor(s/3600)+'h ago';
+  return Math.floor(s/86400)+'d ago';
+}
+
+async function api(path){
+  const r=await fetch(API+path);
+  return r.json();
+}
+
+async function loadStatus(){
+  const d=await api('/status');
+  document.getElementById('status-text').textContent=d.status==='running'?'Audit running...':'Idle';
+  document.getElementById('running-banner').style.display=d.status==='running'?'block':'none';
+  document.getElementById('run-btn').disabled=d.status==='running';
+  document.getElementById('s-pages').textContent=d.total_pages_audited||'-';
+  document.getElementById('s-score').textContent=d.last_audit_score!==null?d.last_audit_score+'%':'-';
+  document.getElementById('s-issues').textContent=d.total_issues||'0';
+  document.getElementById('s-last').textContent=d.last_audit_date?timeAgo(d.last_audit_date):'Never';
+  if(d.status==='running'&&!pollInterval){
+    pollInterval=setInterval(loadAll,5000);
+  }else if(d.status!=='running'&&pollInterval){
+    clearInterval(pollInterval);pollInterval=null;
+  }
+}
+
+async function loadResults(){
+  const d=await api('/audit/results');
+  const el=document.getElementById('overview');
+  if(!d.results||!d.results.length){
+    el.innerHTML='<div class="empty">No audit results yet. Click "Run Audit Now" to start your first SEO audit.</div>';
+    document.getElementById('s-warnings').textContent='-';
+    document.getElementById('s-perfect').textContent='-';
+    return;
+  }
+  const warnings=d.results.reduce((s,r)=>s+r.warnings_count,0);
+  const perfect=d.results.filter(r=>r.issues_count===0&&r.warnings_count===0).length;
+  document.getElementById('s-warnings').textContent=warnings;
+  document.getElementById('s-perfect').textContent=perfect;
+
+  el.innerHTML=`<div class="section"><h2>Page Scores</h2>
+  <table class="results-table"><thead><tr><th>Page</th><th>Score</th><th>Issues</th><th>Warnings</th><th>Words</th><th>Missing Alt</th><th>Broken Links</th></tr></thead>
+  <tbody>${d.results.map(r=>`<tr class="clickable" onclick="showDetail(${r.page_id})">
+    <td><div style="font-weight:600">${r.title}</div><div style="font-size:11px;color:#64748b">${r.url}</div></td>
+    <td><span class="score-badge ${scoreClass(r.score)}">${r.score}%</span></td>
+    <td style="color:${r.issues_count?'#ef4444':'#22c55e'}">${r.issues_count}</td>
+    <td style="color:${r.warnings_count?'#eab308':'#22c55e'}">${r.warnings_count}</td>
+    <td>${r.word_count.toLocaleString()}</td>
+    <td style="color:${r.images_missing_alt?'#ef4444':'#22c55e'}">${r.images_missing_alt}</td>
+    <td style="color:${r.broken_links?'#ef4444':'#22c55e'}">${r.broken_links}</td>
+  </tr>`).join('')}</tbody></table></div>`;
+}
+
+async function loadIssues(){
+  const d=await api('/audit/issues');
+  const el=document.getElementById('issues');
+  if(!d.issues||!d.issues.length){
+    el.innerHTML='<div class="empty">No issues found</div>';return;
+  }
+  const errors=d.issues.filter(i=>i.type==='error');
+  const warns=d.issues.filter(i=>i.type==='warning');
+  el.innerHTML=`
+  <div class="section"><h2>Errors (${errors.length})</h2>
+  ${errors.length?`<table class="results-table"><thead><tr><th>Page</th><th>Issue</th></tr></thead>
+  <tbody>${errors.map(i=>`<tr><td><a href="${i.url}" target="_blank" style="color:#3b82f6;text-decoration:none">${i.page}</a></td><td><span class="issue-tag error">${i.issue}</span></td></tr>`).join('')}</tbody></table>`:'<div class="empty">No errors</div>'}
+  </div>
+  <div class="section"><h2>Warnings (${warns.length})</h2>
+  ${warns.length?`<table class="results-table"><thead><tr><th>Page</th><th>Warning</th></tr></thead>
+  <tbody>${warns.map(i=>`<tr><td><a href="${i.url}" target="_blank" style="color:#3b82f6;text-decoration:none">${i.page}</a></td><td><span class="issue-tag warning">${i.issue}</span></td></tr>`).join('')}</tbody></table>`:'<div class="empty">No warnings</div>'}
+  </div>`;
+}
+
+async function loadHistory(){
+  const d=await api('/audit/history');
+  const el=document.getElementById('history');
+  if(!d.history||!d.history.length){
+    el.innerHTML='<div class="empty">No audit history yet</div>';return;
+  }
+  const maxScore=100;
+  el.innerHTML=`<div class="section"><h2>Score Trend</h2>
+  <div class="history-chart"><div class="history-bars">${d.history.map(h=>{
+    const pct=h.average_score/maxScore*100;
+    const c=scoreColor(h.average_score);
+    const dt=new Date(h.date);
+    return`<div class="history-bar">
+      <div class="bar-value">${h.average_score}%</div>
+      <div class="bar" style="height:${pct}%;background:${c}"></div>
+      <div class="bar-label">${dt.getMonth()+1}/${dt.getDate()}</div>
+    </div>`;
+  }).join('')}</div></div></div>
+  <div class="section"><h2>Audit Log</h2>
+  <table class="results-table"><thead><tr><th>Date</th><th>Pages</th><th>Score</th><th>Issues</th></tr></thead>
+  <tbody>${d.history.slice().reverse().map(h=>`<tr>
+    <td>${new Date(h.date).toLocaleString()}</td>
+    <td>${h.total_pages}</td>
+    <td><span class="score-badge ${scoreClass(h.average_score)}">${h.average_score}%</span></td>
+    <td>${h.total_issues}</td>
+  </tr>`).join('')}</tbody></table></div>`;
+}
+
+async function showDetail(pageId){
+  const d=await api('/audit/page/'+pageId);
+  const el=document.getElementById('detail-content');
+  el.innerHTML=`
+  <button class="close-btn" onclick="closeDetail()">&times;</button>
+  <h3>${d.title}</h3>
+  <div style="font-size:12px;color:#64748b;margin-bottom:16px"><a href="${d.url}" target="_blank" style="color:#3b82f6">${d.url}</a></div>
+  <div style="display:flex;gap:12px;margin-bottom:16px">
+    <span class="score-badge ${scoreClass(d.score)}" style="font-size:16px;padding:6px 16px">${d.score}% SEO Score</span>
+  </div>
+  <div class="progress-bar"><div class="fill" style="width:${d.score}%;background:${scoreColor(d.score)}"></div></div>
+  <div class="detail-meta">
+    <div class="item"><div class="lbl">Meta Title (${d.meta.meta_title_length} chars)</div><div class="val">${d.meta.meta_title||'Not set'}</div></div>
+    <div class="item"><div class="lbl">Meta Description (${d.meta.meta_description_length} chars)</div><div class="val">${d.meta.meta_description||'Not set'}</div></div>
+    <div class="item"><div class="lbl">Word Count</div><div class="val">${d.content.word_count.toLocaleString()}</div></div>
+    <div class="item"><div class="lbl">Headings</div><div class="val">H1: ${d.content.headings.h1}, H2: ${d.content.headings.h2}, H3: ${d.content.headings.h3}</div></div>
+    <div class="item"><div class="lbl">Images</div><div class="val">${d.content.images_total} total, ${d.content.images_missing_alt} missing alt</div></div>
+    <div class="item"><div class="lbl">Links</div><div class="val">${d.content.internal_links} internal, ${d.content.external_links} external</div></div>
+  </div>
+  ${d.issues.length?`<h3 style="color:#ef4444;margin:16px 0 8px">Issues (${d.issues.length})</h3><ul class="detail-list">${d.issues.map(i=>`<li><span class="icon">&#10060;</span>${i}</li>`).join('')}</ul>`:''}
+  ${d.warnings.length?`<h3 style="color:#eab308;margin:16px 0 8px">Warnings (${d.warnings.length})</h3><ul class="detail-list">${d.warnings.map(w=>`<li><span class="icon">&#9888;</span>${w}</li>`).join('')}</ul>`:''}
+  ${d.passes.length?`<h3 style="color:#22c55e;margin:16px 0 8px">Passes (${d.passes.length})</h3><ul class="detail-list">${d.passes.map(p=>`<li><span class="icon">&#9989;</span>${p}</li>`).join('')}</ul>`:''}
+  ${d.broken_links.length?`<h3 style="color:#ef4444;margin:16px 0 8px">Broken Links (${d.broken_links.length})</h3><ul class="detail-list">${d.broken_links.map(b=>`<li><span class="icon">&#128279;</span>${b.url} - ${b.status||b.error}</li>`).join('')}</ul>`:''}
+  `;
+  document.getElementById('detail-modal').style.display='block';
+}
+
+function closeDetail(){document.getElementById('detail-modal').style.display='none';}
+
+async function runAudit(){
+  document.getElementById('run-btn').disabled=true;
+  await fetch(API+'/audit/run',{method:'POST'});
+  setTimeout(loadAll,2000);
+}
+
+async function loadAll(){
+  await loadStatus();
+  await loadResults();
+  await loadIssues();
+  await loadHistory();
+}
+loadAll();
+setInterval(loadStatus,15000);
+</script>
+</body>
+</html>
