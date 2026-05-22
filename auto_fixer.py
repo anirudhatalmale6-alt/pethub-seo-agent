@@ -160,6 +160,135 @@ async def fix_missing_alt_text(page: dict) -> dict:
     return {"page_id": page_id, "fixes": fixes}
 
 
+class HeadingParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.headings = []
+        self._tag = None
+        self._text = ""
+        self._pos = 0
+        self._raw = ""
+
+    def feed(self, data):
+        self._raw = data
+        super().feed(data)
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            self._tag = tag
+            self._text = ""
+            self._pos = self.getpos()
+
+    def handle_data(self, data):
+        if self._tag:
+            self._text += data
+
+    def handle_endtag(self, tag):
+        if tag == self._tag:
+            self.headings.append({
+                "tag": self._tag,
+                "level": int(self._tag[1]),
+                "text": self._text.strip(),
+            })
+            self._tag = None
+
+
+def fix_heading_hierarchy(content: str) -> tuple:
+    parser = HeadingParser()
+    parser.feed(content)
+    headings = parser.headings
+    if not headings:
+        return content, []
+
+    fixes = []
+    modified = content
+
+    h1_count = sum(1 for h in headings if h["level"] == 1)
+    if h1_count > 1:
+        found_first = False
+        for h in headings:
+            if h["level"] == 1:
+                if found_first:
+                    old_open = f'<h1'
+                    text = h["text"]
+                    pattern = re.compile(
+                        r'<h1([^>]*)>(.*?' + re.escape(text) + r'.*?)</h1>',
+                        re.DOTALL
+                    )
+                    match = pattern.search(modified)
+                    if match:
+                        attrs = match.group(1)
+                        inner = match.group(2)
+                        modified = modified[:match.start()] + f'<h2{attrs}>{inner}</h2>' + modified[match.end():]
+                        fixes.append(f"Demoted extra H1 '{text[:40]}' to H2")
+                else:
+                    found_first = True
+
+    parser2 = HeadingParser()
+    parser2.feed(modified)
+    headings2 = parser2.headings
+
+    prev_level = 1
+    for h in headings2:
+        level = h["level"]
+        if level > prev_level + 1:
+            correct_level = prev_level + 1
+            text = h["text"]
+            pattern = re.compile(
+                r'<h' + str(level) + r'([^>]*)>(.*?' + re.escape(text) + r'.*?)</h' + str(level) + r'>',
+                re.DOTALL
+            )
+            match = pattern.search(modified)
+            if match:
+                attrs = match.group(1)
+                inner = match.group(2)
+                modified = (modified[:match.start()] +
+                           f'<h{correct_level}{attrs}>{inner}</h{correct_level}>' +
+                           modified[match.end():])
+                fixes.append(f"Fixed H{level} '{text[:40]}' -> H{correct_level} (was skipping levels)")
+        prev_level = level if level <= prev_level + 1 else prev_level + 1
+
+    return modified, fixes
+
+
+async def fix_heading_structure(page: dict) -> dict:
+    page_id = page["page_id"]
+    title = page["title"]
+    fixes = []
+
+    has_heading_issue = any(
+        "H1" in i or "H2" in i or "heading" in i.lower()
+        for i in page.get("issues", []) + page.get("warnings", [])
+    )
+    if not has_heading_issue:
+        return {"page_id": page_id, "fixes": [], "skipped": True}
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        for endpoint in ["pages", "posts"]:
+            r = await client.get(f"{WP}/{endpoint}/{page_id}?context=edit", headers=WP_HEADERS)
+            if r.status_code != 200:
+                continue
+
+            data = r.json()
+            content = data.get("content", {}).get("raw", "")
+            if not content:
+                break
+
+            modified, heading_fixes = fix_heading_hierarchy(content)
+            if heading_fixes and modified != content:
+                r2 = await client.post(
+                    f"{WP}/{endpoint}/{page_id}",
+                    headers=WP_HEADERS,
+                    json={"content": modified}
+                )
+                if r2.status_code == 200:
+                    fixes.extend(heading_fixes)
+                    logger.info(f"Fixed headings for [{page_id}] {title}: {len(heading_fixes)} changes")
+            break
+
+    return {"page_id": page_id, "fixes": fixes}
+
+
 async def auto_fix_safe_issues(audit_results: list) -> dict:
     total_fixes = 0
     fix_details = []
@@ -174,6 +303,10 @@ async def auto_fix_safe_issues(audit_results: list) -> dict:
         result2 = await fix_missing_alt_text(page)
         if result2["fixes"]:
             page_fixes.extend(result2["fixes"])
+
+        result3 = await fix_heading_structure(page)
+        if result3["fixes"]:
+            page_fixes.extend(result3["fixes"])
 
         if page_fixes:
             fix_details.append({"page": page["title"], "page_id": page["page_id"], "fixes": page_fixes})
