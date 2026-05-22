@@ -48,28 +48,81 @@ class HTMLContentParser(HTMLParser):
             self._current_tag = None
 
 
-def analyze_meta(page: dict) -> dict:
+async def fetch_page_head(url: str) -> str:
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; PetHubSEOBot/1.0)"})
+            if resp.status_code == 200:
+                head_match = re.search(r"<head[^>]*>(.*?)</head>", resp.text, re.DOTALL | re.IGNORECASE)
+                return head_match.group(1) if head_match else resp.text[:15000]
+    except Exception:
+        pass
+    return ""
+
+
+async def analyze_meta(page: dict) -> dict:
     issues = []
     warnings = []
     passes = []
     title_raw = page.get("title", {}).get("rendered", "")
     title = re.sub(r"<[^>]+>", "", title_raw).strip()
-    slug = page.get("slug", "")
+    page_url = page.get("link", "")
 
-    yoast = page.get("yoast_head_json", {}) or {}
-    rank_meta = page.get("rank_math_title", "") or ""
-    rank_desc = page.get("rank_math_description", "") or ""
+    head_html = await fetch_page_head(page_url) if page_url else ""
 
-    meta_title = yoast.get("title", "") or rank_meta or title
-    meta_desc = yoast.get("description", "") or rank_desc or ""
-    og_title = yoast.get("og_title", "") or ""
-    og_desc = yoast.get("og_description", "") or ""
+    meta_title = ""
+    title_matches = re.findall(r'<title>([^<]+)</title>', head_html)
+    for t in title_matches:
+        t = t.strip()
+        if len(t) > len(meta_title):
+            meta_title = t
+    if not meta_title:
+        meta_title = title
+
+    meta_desc = ""
+    desc_matches = re.findall(r'<meta\s+name="description"\s+content="([^"]*)"', head_html)
+    for d in desc_matches:
+        if len(d) > len(meta_desc):
+            meta_desc = d
+
+    og_title = ""
+    m = re.search(r'<meta\s+property="og:title"\s+content="([^"]*)"', head_html)
+    if m:
+        og_title = m.group(1)
+
+    og_desc = ""
+    m = re.search(r'<meta\s+property="og:description"\s+content="([^"]*)"', head_html)
+    if m:
+        og_desc = m.group(1)
+
     og_image = ""
-    og_images = yoast.get("og_image", [])
-    if og_images and isinstance(og_images, list) and len(og_images) > 0:
-        og_image = og_images[0].get("url", "")
-    canonical = yoast.get("canonical", "") or ""
-    schema = yoast.get("schema", {})
+    m = re.search(r'<meta\s+property="og:image"\s+content="([^"]*)"', head_html)
+    if m:
+        og_image = m.group(1)
+
+    canonical = ""
+    m = re.search(r'<link\s+rel="canonical"\s+href="([^"]*)"', head_html)
+    if not m:
+        m = re.search(r'<link\s+href="([^"]*)"\s+rel="canonical"', head_html)
+    if m:
+        canonical = m.group(1)
+
+    has_schema = "application/ld+json" in head_html
+
+    robots = ""
+    m = re.search(r'<meta\s+name="robots"\s+content="([^"]*)"', head_html)
+    if m:
+        robots = m.group(1).lower()
+
+    viewport = ""
+    m = re.search(r'<meta\s+name="viewport"\s+content="([^"]*)"', head_html)
+    if m:
+        viewport = m.group(1)
+
+    if "noindex" in robots:
+        issues.append("CRITICAL: Page has noindex robots tag - Google will NOT index this page")
+    if "nofollow" in robots:
+        warnings.append("Page has nofollow robots tag - link equity not being passed")
 
     if not meta_title:
         issues.append("Missing meta title")
@@ -109,10 +162,17 @@ def analyze_meta(page: dict) -> dict:
     else:
         warnings.append("Missing canonical URL")
 
-    if schema:
+    if has_schema:
         passes.append("Schema markup present")
     else:
         warnings.append("No schema/structured data detected")
+
+    if viewport and "width=device-width" in viewport:
+        passes.append("Mobile viewport configured")
+    elif viewport:
+        warnings.append(f"Viewport set but may not be mobile-optimal: {viewport}")
+    else:
+        issues.append("Missing viewport meta tag - not mobile friendly")
 
     return {
         "meta_title": meta_title,
@@ -123,7 +183,9 @@ def analyze_meta(page: dict) -> dict:
         "og_description": og_desc,
         "og_image": og_image,
         "canonical": canonical,
-        "has_schema": bool(schema),
+        "has_schema": has_schema,
+        "robots": robots,
+        "viewport": viewport,
         "issues": issues,
         "warnings": warnings,
         "passes": passes,
@@ -278,7 +340,7 @@ async def audit_single_page(page: dict) -> dict:
     link = page.get("link", "")
     page_id = page.get("id", 0)
 
-    meta_result = analyze_meta(page)
+    meta_result = await analyze_meta(page)
     content_result = analyze_content(content)
 
     all_links = []

@@ -10,6 +10,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import settings
 from seo_auditor import run_full_audit, audit_single_page, fetch_all_pages, fetch_all_posts
+from auto_fixer import auto_fix_safe_issues
 from manager_client import heartbeat, create_task, update_task, update_kpi, log_message
 
 logging.basicConfig(level=logging.INFO)
@@ -21,6 +22,8 @@ audit_state = {
     "last_audit": None,
     "running": False,
     "history": [],
+    "auto_fix_enabled": True,
+    "last_fix_result": None,
 }
 
 
@@ -96,6 +99,14 @@ async def run_scheduled_audit():
 
         pages_count = result["total_pages"]
         await update_kpi("pages_published_week", pages_count)
+
+        if audit_state["auto_fix_enabled"]:
+            await log_message("info", "Running auto-fix on safe issues...")
+            fix_result = await auto_fix_safe_issues(result["results"])
+            audit_state["last_fix_result"] = fix_result
+            summary["auto_fix"] = fix_result
+            if fix_result["total_fixes"] > 0:
+                await log_message("info", f"Auto-fixed {fix_result['total_fixes']} issues across {fix_result['pages_fixed']} pages")
 
         if task_id:
             await update_task(task_id, "completed", output_data=summary)
@@ -243,6 +254,29 @@ async def get_all_issues():
 @app.get("/api/audit/history")
 async def get_audit_history():
     return {"history": audit_state["history"]}
+
+
+@app.get("/api/autofix/status")
+async def autofix_status():
+    return {
+        "enabled": audit_state["auto_fix_enabled"],
+        "last_result": audit_state["last_fix_result"],
+    }
+
+
+@app.post("/api/autofix/toggle")
+async def toggle_autofix(enabled: bool = True):
+    audit_state["auto_fix_enabled"] = enabled
+    return {"enabled": enabled}
+
+
+@app.post("/api/autofix/run")
+async def run_autofix_now():
+    if not audit_state["last_audit"]:
+        raise HTTPException(400, "No audit results to fix. Run an audit first.")
+    fix_result = await auto_fix_safe_issues(audit_state["last_audit"]["results"])
+    audit_state["last_fix_result"] = fix_result
+    return fix_result
 
 
 @app.get("/", response_class=HTMLResponse)
