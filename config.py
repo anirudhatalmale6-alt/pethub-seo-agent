@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     WP_USER: str = "jasonsarah2026"
     WP_APP_PASSWORD: str = "EIul 3KqI 3fY7 yLbk Ltva aPnj"
     HEARTBEAT_INTERVAL: int = 120
+    OPENAI_API_KEY: str = ""
     AUDIT_INTERVAL_HOURS: int = 24
     DB_PATH: str = "/var/lib/freelancer/projects/40416335/seo-agent/data/seo_data.json"
 

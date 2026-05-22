@@ -122,7 +122,19 @@ async def fix_long_meta_descriptions(audit_results: list) -> dict:
                     content_html = r.json().get("content", {}).get("rendered", "")
                     break
 
-            new_desc = optimize_meta_description(title, content_html, current_desc)
+            # Try AI-generated meta description first
+            new_desc = None
+            try:
+                from ai_client import ai_generate_meta_description
+                text_snippet = re.sub(r"<[^>]+>", " ", content_html)[:300]
+                new_desc = await ai_generate_meta_description(title, text_snippet)
+                if new_desc:
+                    logger.info(f"Using AI meta description for {title}")
+            except Exception as e:
+                logger.debug(f"AI meta description unavailable: {e}")
+
+            if not new_desc:
+                new_desc = optimize_meta_description(title, content_html, current_desc)
             if not new_desc:
                 continue
 
@@ -179,7 +191,18 @@ async def fix_missing_meta_description(page: dict) -> dict:
 
             data = r.json()
             content = data.get("content", {}).get("raw", "")
-            desc = generate_meta_description(title, content)
+            # Try AI first for missing meta descriptions
+            desc = None
+            try:
+                from ai_client import ai_generate_meta_description
+                text_snippet = re.sub(r"<[^>]+>", " ", content)[:300]
+                desc = await ai_generate_meta_description(title, text_snippet)
+                if desc:
+                    logger.info(f"Using AI meta description for missing: {title}")
+            except Exception:
+                pass
+            if not desc:
+                desc = generate_meta_description(title, content)
 
             r2 = await client.post(
                 f"{WP}/{endpoint}/{page_id}",
