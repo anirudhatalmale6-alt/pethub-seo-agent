@@ -265,6 +265,9 @@ def analyze_content(content_html: str) -> dict:
     }
 
 
+SKIP_DOMAINS = ["amazon.co.uk", "amazon.com", "amzn.to", "ebay.com", "ebay.co.uk"]
+
+
 async def check_broken_links(links: list, base_url: str) -> list:
     broken = []
     checked = set()
@@ -277,6 +280,8 @@ async def check_broken_links(links: list, base_url: str) -> list:
             if href.startswith("/"):
                 href = base_url.rstrip("/") + href
             if not href.startswith("http"):
+                continue
+            if any(d in href for d in SKIP_DOMAINS):
                 continue
             try:
                 resp = await client.head(href)
