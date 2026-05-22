@@ -1,6 +1,7 @@
 import re
 import logging
 import base64
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 import httpx
 from config import settings
@@ -289,6 +290,193 @@ async def fix_heading_structure(page: dict) -> dict:
     return {"page_id": page_id, "fixes": fixes}
 
 
+async def fix_broken_internal_links(page: dict) -> dict:
+    page_id = page["page_id"]
+    title = page["title"]
+    fixes = []
+
+    broken = page.get("broken_links", [])
+    internal_broken = [
+        b for b in broken
+        if isinstance(b, dict) and settings.WP_URL in b.get("url", "")
+    ]
+
+    if not internal_broken:
+        return {"page_id": page_id, "fixes": [], "skipped": True}
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        all_slugs = {}
+        for endpoint in ["pages", "posts"]:
+            page_num = 1
+            while True:
+                resp = await client.get(
+                    f"{WP}/{endpoint}",
+                    headers=WP_HEADERS,
+                    params={"per_page": 100, "page": page_num, "status": "publish"},
+                )
+                if resp.status_code != 200:
+                    break
+                batch = resp.json()
+                if not batch:
+                    break
+                for item in batch:
+                    slug = item.get("slug", "")
+                    link = item.get("link", "")
+                    if slug and link:
+                        all_slugs[slug] = link
+                if len(batch) < 100:
+                    break
+                page_num += 1
+
+        content_data = None
+        used_endpoint = None
+        for endpoint in ["pages", "posts"]:
+            resp = await client.get(
+                f"{WP}/{endpoint}/{page_id}?context=edit",
+                headers=WP_HEADERS,
+            )
+            if resp.status_code == 200:
+                content_data = resp.json()
+                used_endpoint = endpoint
+                break
+
+        if not content_data:
+            return {"page_id": page_id, "fixes": []}
+
+        raw_content = content_data.get("content", {}).get("raw", "")
+        modified = raw_content
+
+        for broken_link in internal_broken:
+            broken_url = broken_link.get("url", "")
+            if not broken_url:
+                continue
+
+            broken_slug = broken_url.rstrip("/").split("/")[-1]
+            if not broken_slug:
+                continue
+
+            correct_url = all_slugs.get(broken_slug)
+            if correct_url and correct_url.rstrip("/") != broken_url.rstrip("/"):
+                modified = modified.replace(broken_url, correct_url)
+                fixes.append(f"Fixed broken link: {broken_url} -> {correct_url}")
+                logger.info(f"Fixed broken internal link on [{page_id}] {title}: {broken_url} -> {correct_url}")
+
+        if fixes and modified != raw_content:
+            resp = await client.post(
+                f"{WP}/{used_endpoint}/{page_id}",
+                headers=WP_HEADERS,
+                json={"content": modified},
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Failed to save broken link fixes for [{page_id}] {title}")
+                fixes = []
+
+    return {"page_id": page_id, "fixes": fixes}
+
+
+async def refresh_stale_content(page: dict) -> dict:
+    page_id = page["page_id"]
+    title = page["title"]
+    fixes = []
+
+    modified_date = page.get("modified", "") or page.get("audited_at", "")
+    if not modified_date:
+        return {"page_id": page_id, "fixes": [], "skipped": True}
+
+    try:
+        mod_dt = datetime.fromisoformat(modified_date.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        days_stale = (now - mod_dt).days
+    except (ValueError, TypeError):
+        return {"page_id": page_id, "fixes": [], "skipped": True}
+
+    if days_stale < 90:
+        return {"page_id": page_id, "fixes": [], "skipped": True}
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        for endpoint in ["pages", "posts"]:
+            resp = await client.get(
+                f"{WP}/{endpoint}/{page_id}?context=edit",
+                headers=WP_HEADERS,
+            )
+            if resp.status_code != 200:
+                continue
+
+            data = resp.json()
+            current_excerpt = data.get("excerpt", {}).get("raw", "")
+
+            resp2 = await client.post(
+                f"{WP}/{endpoint}/{page_id}",
+                headers=WP_HEADERS,
+                json={"excerpt": current_excerpt},
+            )
+            if resp2.status_code == 200:
+                fixes.append(f"Refreshed stale content ({days_stale} days old)")
+                logger.info(f"Refreshed stale page [{page_id}] {title} ({days_stale} days)")
+            break
+
+    return {"page_id": page_id, "fixes": fixes}
+
+
+async def get_content_freshness(audit_results: list) -> dict:
+    stale = []
+    fresh = []
+    unknown = []
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        for page in audit_results:
+            page_id = page["page_id"]
+            title = page["title"]
+            url = page.get("url", "")
+            modified_date = None
+
+            for endpoint in ["pages", "posts"]:
+                resp = await client.get(
+                    f"{WP}/{endpoint}/{page_id}",
+                    headers=WP_HEADERS,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    modified_date = data.get("modified", "")
+                    break
+
+            if not modified_date:
+                unknown.append({"page_id": page_id, "title": title, "url": url})
+                continue
+
+            try:
+                mod_dt = datetime.fromisoformat(modified_date.replace("Z", "+00:00"))
+                now = datetime.now(timezone.utc)
+                days_age = (now - mod_dt).days
+            except (ValueError, TypeError):
+                unknown.append({"page_id": page_id, "title": title, "url": url})
+                continue
+
+            entry = {
+                "page_id": page_id,
+                "title": title,
+                "url": url,
+                "last_modified": modified_date,
+                "days_since_update": days_age,
+            }
+
+            if days_age >= 90:
+                stale.append(entry)
+            else:
+                fresh.append(entry)
+
+    stale.sort(key=lambda x: x["days_since_update"], reverse=True)
+
+    return {
+        "total_pages": len(stale) + len(fresh) + len(unknown),
+        "stale_count": len(stale),
+        "fresh_count": len(fresh),
+        "unknown_count": len(unknown),
+        "stale_pages": stale,
+        "fresh_pages": fresh,
+    }
+
+
 async def auto_fix_safe_issues(audit_results: list) -> dict:
     total_fixes = 0
     fix_details = []
@@ -307,6 +495,10 @@ async def auto_fix_safe_issues(audit_results: list) -> dict:
         result3 = await fix_heading_structure(page)
         if result3["fixes"]:
             page_fixes.extend(result3["fixes"])
+
+        result4 = await fix_broken_internal_links(page)
+        if result4["fixes"]:
+            page_fixes.extend(result4["fixes"])
 
         if page_fixes:
             fix_details.append({"page": page["title"], "page_id": page["page_id"], "fixes": page_fixes})

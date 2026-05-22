@@ -10,7 +10,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import settings
 from seo_auditor import run_full_audit, audit_single_page, fetch_all_pages, fetch_all_posts
-from auto_fixer import auto_fix_safe_issues
+from auto_fixer import auto_fix_safe_issues, get_content_freshness, refresh_stale_content
+from schema_generator import generate_and_inject_schemas
+from internal_linker import suggest_internal_links, auto_add_internal_links
 from manager_client import heartbeat, create_task, update_task, update_kpi, log_message
 
 logging.basicConfig(level=logging.INFO)
@@ -24,6 +26,13 @@ audit_state = {
     "history": [],
     "auto_fix_enabled": True,
     "last_fix_result": None,
+    "last_schema_result": None,
+    "schema_running": False,
+    "last_links_suggestions": None,
+    "last_links_result": None,
+    "links_running": False,
+    "last_freshness": None,
+    "freshness_running": False,
 }
 
 
@@ -35,6 +44,10 @@ def load_state():
                 data = json.load(f)
                 audit_state["last_audit"] = data.get("last_audit")
                 audit_state["history"] = data.get("history", [])
+                audit_state["last_schema_result"] = data.get("last_schema_result")
+                audit_state["last_links_suggestions"] = data.get("last_links_suggestions")
+                audit_state["last_links_result"] = data.get("last_links_result")
+                audit_state["last_freshness"] = data.get("last_freshness")
         except Exception:
             pass
 
@@ -45,6 +58,10 @@ def save_state():
         json.dump({
             "last_audit": audit_state["last_audit"],
             "history": audit_state["history"][-30:],
+            "last_schema_result": audit_state["last_schema_result"],
+            "last_links_suggestions": audit_state["last_links_suggestions"],
+            "last_links_result": audit_state["last_links_result"],
+            "last_freshness": audit_state["last_freshness"],
         }, f, default=str)
 
 
@@ -122,11 +139,77 @@ async def run_scheduled_audit():
         audit_state["running"] = False
 
 
+async def run_scheduled_schema_generation():
+    if audit_state["schema_running"]:
+        return
+    if not audit_state["last_audit"]:
+        logger.info("No audit results for schema generation, skipping")
+        return
+
+    audit_state["schema_running"] = True
+    try:
+        await log_message("info", "Starting scheduled schema generation")
+        result = await generate_and_inject_schemas(audit_state["last_audit"]["results"])
+        audit_state["last_schema_result"] = result
+        save_state()
+        await log_message("info", f"Schema generation complete: {result['schemas_injected']} injected")
+    except Exception as e:
+        logger.error(f"Schema generation failed: {e}")
+        await log_message("error", f"Schema generation failed: {e}")
+    finally:
+        audit_state["schema_running"] = False
+
+
+async def run_scheduled_link_analysis():
+    if audit_state["links_running"]:
+        return
+    if not audit_state["last_audit"]:
+        logger.info("No audit results for link analysis, skipping")
+        return
+
+    audit_state["links_running"] = True
+    try:
+        await log_message("info", "Starting scheduled internal link analysis")
+        suggestions = await suggest_internal_links(audit_state["last_audit"]["results"])
+        audit_state["last_links_suggestions"] = suggestions
+        save_state()
+        await log_message("info", f"Link analysis complete: {len(suggestions)} suggestions")
+    except Exception as e:
+        logger.error(f"Link analysis failed: {e}")
+        await log_message("error", f"Link analysis failed: {e}")
+    finally:
+        audit_state["links_running"] = False
+
+
+async def run_scheduled_freshness_check():
+    if audit_state["freshness_running"]:
+        return
+    if not audit_state["last_audit"]:
+        logger.info("No audit results for freshness check, skipping")
+        return
+
+    audit_state["freshness_running"] = True
+    try:
+        await log_message("info", "Starting scheduled content freshness check")
+        result = await get_content_freshness(audit_state["last_audit"]["results"])
+        audit_state["last_freshness"] = result
+        save_state()
+        await log_message("info", f"Freshness check complete: {result['stale_count']} stale pages")
+    except Exception as e:
+        logger.error(f"Freshness check failed: {e}")
+        await log_message("error", f"Freshness check failed: {e}")
+    finally:
+        audit_state["freshness_running"] = False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_state()
     scheduler.add_job(send_heartbeat, "interval", seconds=settings.HEARTBEAT_INTERVAL, id="heartbeat")
     scheduler.add_job(run_scheduled_audit, "cron", hour="3", id="daily_audit")
+    scheduler.add_job(run_scheduled_schema_generation, "cron", day_of_week="sun", hour="4", id="weekly_schema")
+    scheduler.add_job(run_scheduled_link_analysis, "cron", day_of_week="sun", hour="5", id="weekly_links")
+    scheduler.add_job(run_scheduled_freshness_check, "cron", day_of_week="mon", hour="2", id="weekly_freshness")
     scheduler.start()
     await send_heartbeat()
     await log_message("info", "SEO Agent started")
@@ -138,7 +221,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="PetHub SEO Agent",
     description="Automated SEO auditing and optimization for pethubonline.com",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
     root_path="/agents/seo"
 )
@@ -277,6 +360,110 @@ async def run_autofix_now():
     fix_result = await auto_fix_safe_issues(audit_state["last_audit"]["results"])
     audit_state["last_fix_result"] = fix_result
     return fix_result
+
+
+@app.post("/api/schema/generate")
+async def trigger_schema_generation():
+    if audit_state["schema_running"]:
+        raise HTTPException(409, "Schema generation already running")
+    if not audit_state["last_audit"]:
+        raise HTTPException(400, "No audit results. Run an audit first.")
+    import asyncio
+    asyncio.create_task(run_scheduled_schema_generation())
+    return {"message": "Schema generation started", "status": "running"}
+
+
+@app.get("/api/schema/status")
+async def get_schema_status():
+    return {
+        "running": audit_state["schema_running"],
+        "last_result": audit_state["last_schema_result"],
+    }
+
+
+@app.post("/api/links/analyze")
+async def trigger_link_analysis():
+    if audit_state["links_running"]:
+        raise HTTPException(409, "Link analysis already running")
+    if not audit_state["last_audit"]:
+        raise HTTPException(400, "No audit results. Run an audit first.")
+    import asyncio
+    asyncio.create_task(run_scheduled_link_analysis())
+    return {"message": "Link analysis started", "status": "running"}
+
+
+@app.get("/api/links/suggestions")
+async def get_link_suggestions():
+    return {
+        "running": audit_state["links_running"],
+        "suggestions": audit_state["last_links_suggestions"] or [],
+        "total": len(audit_state["last_links_suggestions"] or []),
+    }
+
+
+@app.post("/api/links/apply")
+async def apply_internal_links():
+    if audit_state["links_running"]:
+        raise HTTPException(409, "Link operation already running")
+    if not audit_state["last_audit"]:
+        raise HTTPException(400, "No audit results. Run an audit first.")
+    audit_state["links_running"] = True
+    try:
+        result = await auto_add_internal_links(audit_state["last_audit"]["results"])
+        audit_state["last_links_result"] = result
+        save_state()
+        return result
+    finally:
+        audit_state["links_running"] = False
+
+
+@app.get("/api/freshness")
+async def get_freshness_report():
+    if audit_state["last_freshness"]:
+        return {
+            "running": audit_state["freshness_running"],
+            "report": audit_state["last_freshness"],
+        }
+    if not audit_state["last_audit"]:
+        return {"running": False, "report": None, "message": "No audit results. Run an audit first."}
+    result = await get_content_freshness(audit_state["last_audit"]["results"])
+    audit_state["last_freshness"] = result
+    save_state()
+    return {"running": False, "report": result}
+
+
+@app.post("/api/freshness/refresh")
+async def trigger_freshness_refresh():
+    if audit_state["freshness_running"]:
+        raise HTTPException(409, "Freshness refresh already running")
+    if not audit_state["last_audit"]:
+        raise HTTPException(400, "No audit results. Run an audit first.")
+
+    audit_state["freshness_running"] = True
+    try:
+        freshness = await get_content_freshness(audit_state["last_audit"]["results"])
+        refreshed = []
+        for stale_page in freshness.get("stale_pages", []):
+            page_data = None
+            for r in audit_state["last_audit"]["results"]:
+                if r["page_id"] == stale_page["page_id"]:
+                    page_data = r
+                    break
+            if page_data:
+                page_data["modified"] = stale_page.get("last_modified", "")
+                result = await refresh_stale_content(page_data)
+                if result["fixes"]:
+                    refreshed.append({
+                        "page_id": stale_page["page_id"],
+                        "title": stale_page["title"],
+                        "fixes": result["fixes"],
+                    })
+
+        audit_state["last_freshness"] = await get_content_freshness(audit_state["last_audit"]["results"])
+        save_state()
+        return {"refreshed_count": len(refreshed), "details": refreshed}
+    finally:
+        audit_state["freshness_running"] = False
 
 
 @app.get("/", response_class=HTMLResponse)

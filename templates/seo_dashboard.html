@@ -71,6 +71,24 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .history-bar .bar{width:100%;max-width:40px;border-radius:4px 4px 0 0;transition:height .3s}
 .history-bar .bar-label{font-size:10px;color:#64748b}
 .history-bar .bar-value{font-size:11px;color:#e2e8f0;font-weight:600}
+.stat-card:hover.amber{border-color:#f59e0b}
+.stat-card .value.amber{color:#f59e0b}
+.score-badge.amber{background:rgba(245,158,11,.15);color:#f59e0b}
+.tab.amber.active{background:#f59e0b;color:#fff}
+.schema-type{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;background:rgba(245,158,11,.12);color:#f59e0b;margin:2px}
+.link-card{background:#0f172a;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}
+.link-card .source{font-size:13px;color:#e2e8f0}
+.link-card .arrow{color:#f59e0b;font-size:18px;margin:0 12px;flex-shrink:0}
+.link-card .target{font-size:13px;color:#e2e8f0}
+.link-card .meta{font-size:11px;color:#64748b;margin-top:4px}
+.freshness-bar{display:flex;gap:4px;height:24px;border-radius:6px;overflow:hidden;margin:12px 0}
+.freshness-bar .segment{transition:width .3s}
+.btn-amber{background:#f59e0b;color:#000}
+.btn-amber:hover{background:#d97706}
+.btn-amber:disabled{background:#334155;color:#64748b;cursor:not-allowed}
+.stale-list{list-style:none;padding:0}
+.stale-list li{padding:10px 14px;border-bottom:1px solid #1e293b;font-size:13px;display:flex;justify-content:space-between;align-items:center}
+.stale-list li .days{color:#ef4444;font-weight:600;font-size:12px}
 </style>
 </head>
 <body>
@@ -100,10 +118,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
   <div class="tabs">
     <button class="tab active" onclick="showTab('overview',this)">Overview</button>
     <button class="tab" onclick="showTab('issues',this)">All Issues</button>
+    <button class="tab amber" onclick="showTab('schemas',this)">Schema</button>
+    <button class="tab amber" onclick="showTab('links',this)">Internal Links</button>
+    <button class="tab amber" onclick="showTab('freshness',this)">Freshness</button>
     <button class="tab" onclick="showTab('history',this)">History</button>
   </div>
   <div id="overview" class="panel active"></div>
   <div id="issues" class="panel"></div>
+  <div id="schemas" class="panel"></div>
+  <div id="links" class="panel"></div>
+  <div id="freshness" class="panel"></div>
   <div id="history" class="panel"></div>
 </div>
 <div class="detail-modal" id="detail-modal" onclick="if(event.target===this)closeDetail()">
@@ -263,10 +287,166 @@ async function runAudit(){
   setTimeout(loadAll,2000);
 }
 
+async function loadSchemas(){
+  const d=await api('/schema/status');
+  const el=document.getElementById('schemas');
+  let html=`<div class="section"><h2 style="display:flex;align-items:center;justify-content:space-between">
+    Schema / Structured Data
+    <button class="btn btn-amber" onclick="runSchemaGen()" ${d.running?'disabled':''}>
+      ${d.running?'Generating...':'Generate Schemas'}
+    </button>
+  </h2>`;
+  if(d.running){
+    html+=`<div class="audit-running"><span class="spinner"></span><span style="color:#f59e0b">Schema generation in progress...</span></div>`;
+  }
+  if(!d.last_result){
+    html+=`<div class="empty">No schema generation has been run yet. Click "Generate Schemas" to analyze pages and inject structured data.</div>`;
+  }else{
+    const r=d.last_result;
+    html+=`<div class="stats-grid" style="margin-bottom:20px">
+      <div class="stat-card"><div class="label">Pages Processed</div><div class="value amber">${r.pages_processed}</div></div>
+      <div class="stat-card"><div class="label">Schemas Generated</div><div class="value amber">${r.schemas_generated}</div></div>
+      <div class="stat-card"><div class="label">Schemas Injected</div><div class="value green">${r.schemas_injected}</div></div>
+    </div>`;
+    if(r.details&&r.details.length){
+      html+=`<table class="results-table"><thead><tr><th>Page</th><th>Schema Type</th><th>Status</th></tr></thead><tbody>`;
+      r.details.forEach(d=>{
+        const statusColor=d.status==='injected'?'#22c55e':d.status==='skipped'?'#64748b':d.status==='no_schema_applicable'?'#94a3b8':'#ef4444';
+        html+=`<tr>
+          <td>${d.title}</td>
+          <td>${d.schema_type?`<span class="schema-type">${d.schema_type}</span>`:'-'}</td>
+          <td style="color:${statusColor}">${d.status}${d.reason?' ('+d.reason+')':''}</td>
+        </tr>`;
+      });
+      html+=`</tbody></table>`;
+    }
+  }
+  html+=`</div>`;
+  el.innerHTML=html;
+}
+
+async function runSchemaGen(){
+  await fetch(API+'/schema/generate',{method:'POST'});
+  setTimeout(loadSchemas,2000);
+  setTimeout(loadSchemas,8000);
+}
+
+async function loadLinks(){
+  const d=await api('/links/suggestions');
+  const el=document.getElementById('links');
+  let html=`<div class="section"><h2 style="display:flex;align-items:center;justify-content:space-between">
+    Internal Linking
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-amber" onclick="runLinkAnalysis()" ${d.running?'disabled':''}>
+        ${d.running?'Analyzing...':'Analyze Links'}
+      </button>
+      <button class="btn btn-primary" onclick="applyLinks()" ${!d.suggestions||!d.suggestions.length?'disabled':''}>Apply Links</button>
+    </div>
+  </h2>`;
+  if(d.running){
+    html+=`<div class="audit-running"><span class="spinner"></span><span style="color:#f59e0b">Link analysis in progress...</span></div>`;
+  }
+  if(!d.suggestions||!d.suggestions.length){
+    html+=`<div class="empty">No link suggestions yet. Click "Analyze Links" to find internal linking opportunities.</div>`;
+  }else{
+    html+=`<div style="margin-bottom:16px;font-size:13px;color:#94a3b8">${d.total} link suggestions found</div>`;
+    d.suggestions.forEach(s=>{
+      html+=`<div class="link-card">
+        <div style="flex:1">
+          <div class="source">${s.source_title}</div>
+          <div class="meta">${s.source_url}</div>
+        </div>
+        <div class="arrow">&#8594;</div>
+        <div style="flex:1">
+          <div class="target">${s.target_title}</div>
+          <div class="meta">Anchor: "${s.anchor_text}" | Relevance: ${(s.relevance_score*100).toFixed(0)}%</div>
+        </div>
+      </div>`;
+    });
+  }
+  html+=`</div>`;
+  el.innerHTML=html;
+}
+
+async function runLinkAnalysis(){
+  await fetch(API+'/links/analyze',{method:'POST'});
+  setTimeout(loadLinks,2000);
+  setTimeout(loadLinks,10000);
+}
+
+async function applyLinks(){
+  const r=await fetch(API+'/links/apply',{method:'POST'});
+  const d=await r.json();
+  alert(`Applied ${d.links_added} internal links (${d.links_failed} failed)`);
+  loadLinks();
+}
+
+async function loadFreshness(){
+  const d=await api('/freshness');
+  const el=document.getElementById('freshness');
+  let html=`<div class="section"><h2 style="display:flex;align-items:center;justify-content:space-between">
+    Content Freshness
+    <button class="btn btn-amber" onclick="refreshStale()" ${d.running?'disabled':''}>
+      ${d.running?'Refreshing...':'Refresh Stale Pages'}
+    </button>
+  </h2>`;
+  if(d.running){
+    html+=`<div class="audit-running"><span class="spinner"></span><span style="color:#f59e0b">Freshness refresh in progress...</span></div>`;
+  }
+  if(!d.report){
+    html+=`<div class="empty">${d.message||'No freshness data yet. Run an audit first.'}</div>`;
+  }else{
+    const r=d.report;
+    const total=r.total_pages||1;
+    const freshPct=Math.round(r.fresh_count/total*100);
+    const stalePct=Math.round(r.stale_count/total*100);
+    html+=`<div class="stats-grid" style="margin-bottom:20px">
+      <div class="stat-card"><div class="label">Total Pages</div><div class="value">${r.total_pages}</div></div>
+      <div class="stat-card"><div class="label">Fresh (&lt;90 days)</div><div class="value green">${r.fresh_count}</div></div>
+      <div class="stat-card"><div class="label">Stale (&gt;90 days)</div><div class="value red">${r.stale_count}</div></div>
+    </div>`;
+    html+=`<div style="margin-bottom:20px">
+      <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">Freshness Distribution</div>
+      <div class="freshness-bar">
+        <div class="segment" style="width:${freshPct}%;background:#22c55e" title="Fresh: ${r.fresh_count}"></div>
+        <div class="segment" style="width:${stalePct}%;background:#ef4444" title="Stale: ${r.stale_count}"></div>
+      </div>
+      <div style="display:flex;gap:16px;font-size:11px;color:#94a3b8">
+        <span style="color:#22c55e">&#9632; Fresh ${freshPct}%</span>
+        <span style="color:#ef4444">&#9632; Stale ${stalePct}%</span>
+      </div>
+    </div>`;
+    if(r.stale_pages&&r.stale_pages.length){
+      html+=`<h3 style="font-size:15px;color:#ef4444;margin-bottom:12px">Stale Pages (${r.stale_count})</h3>`;
+      html+=`<table class="results-table"><thead><tr><th>Page</th><th>Last Modified</th><th>Days Stale</th></tr></thead><tbody>`;
+      r.stale_pages.forEach(p=>{
+        html+=`<tr>
+          <td><a href="${p.url}" target="_blank" style="color:#3b82f6;text-decoration:none">${p.title}</a></td>
+          <td style="font-size:12px;color:#94a3b8">${p.last_modified?new Date(p.last_modified).toLocaleDateString():'Unknown'}</td>
+          <td><span style="color:#ef4444;font-weight:600">${p.days_since_update} days</span></td>
+        </tr>`;
+      });
+      html+=`</tbody></table>`;
+    }
+  }
+  html+=`</div>`;
+  el.innerHTML=html;
+}
+
+async function refreshStale(){
+  const r=await fetch(API+'/freshness/refresh',{method:'POST'});
+  const d=await r.json();
+  alert(`Refreshed ${d.refreshed_count} stale pages`);
+  loadFreshness();
+}
+
 async function loadAll(){
   await loadStatus();
   await loadResults();
   await loadIssues();
+  await loadSchemas();
+  await loadLinks();
+  await loadFreshness();
   await loadHistory();
 }
 loadAll();
