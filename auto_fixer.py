@@ -11,6 +11,10 @@ logger = logging.getLogger("seo-agent.fixer")
 WP_AUTH = "Basic " + base64.b64encode(f"{settings.WP_USER}:{settings.WP_APP_PASSWORD}".encode()).decode()
 WP_HEADERS = {"Authorization": WP_AUTH, "Content-Type": "application/json"}
 WP = f"{settings.WP_URL}/wp-json/wp/v2"
+RANKMATH_API = f"{settings.WP_URL}/wp-json/rankmath/v1"
+
+MAX_META_DESC_LENGTH = 160
+MIN_META_DESC_LENGTH = 80
 
 
 class ImgFinder(HTMLParser):
@@ -41,6 +45,111 @@ def generate_meta_description(title: str, content_html: str) -> str:
     if len(desc) > 160:
         desc = desc[:157] + "..."
     return desc
+
+
+def optimize_meta_description(title: str, content_html: str, current_desc: str) -> str | None:
+    if current_desc and MIN_META_DESC_LENGTH <= len(current_desc) <= MAX_META_DESC_LENGTH:
+        return None
+
+    text = re.sub(r"<[^>]+>", " ", content_html)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    title_clean = re.sub(r"<[^>]+>", "", title).strip()
+    title_words = [w.lower() for w in title_clean.split() if len(w) > 3]
+
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    keyword_sentences = []
+    other_sentences = []
+    for s in sentences:
+        s = s.strip()
+        if len(s) < 20 or len(s) > 200:
+            continue
+        if any(kw in s.lower() for kw in title_words):
+            keyword_sentences.append(s)
+        else:
+            other_sentences.append(s)
+
+    candidates = keyword_sentences + other_sentences
+    desc = ""
+    for s in candidates[:3]:
+        if not desc:
+            desc = s
+        elif len(desc) + len(s) + 2 <= MAX_META_DESC_LENGTH:
+            desc = f"{desc} {s}"
+        else:
+            break
+
+    if len(desc) < MIN_META_DESC_LENGTH:
+        desc = f"{title_clean}. Find the best products, reviews and expert buying guides at Pet Hub Online."
+
+    if len(desc) > MAX_META_DESC_LENGTH:
+        desc = desc[:MAX_META_DESC_LENGTH - 3].rsplit(" ", 1)[0] + "..."
+
+    if desc == current_desc:
+        return None
+
+    return desc
+
+
+async def fix_long_meta_descriptions(audit_results: list) -> dict:
+    fixed = 0
+    details = []
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        for page in audit_results:
+            page_id = page["page_id"]
+            title = page["title"]
+            url = page.get("url", "")
+
+            resp = await client.get(url, timeout=10)
+            if resp.status_code != 200:
+                continue
+
+            match = re.search(
+                r'name="description"\s+content="([^"]+)"', resp.text[:10000]
+            )
+            if not match:
+                continue
+
+            current_desc = match.group(1)
+            if len(current_desc) <= MAX_META_DESC_LENGTH:
+                continue
+
+            content_html = ""
+            for endpoint in ["pages", "posts"]:
+                r = await client.get(f"{WP}/{endpoint}/{page_id}", headers=WP_HEADERS)
+                if r.status_code == 200:
+                    content_html = r.json().get("content", {}).get("rendered", "")
+                    break
+
+            new_desc = optimize_meta_description(title, content_html, current_desc)
+            if not new_desc:
+                continue
+
+            r2 = await client.post(
+                f"{RANKMATH_API}/updateMeta",
+                headers=WP_HEADERS,
+                json={
+                    "objectID": page_id,
+                    "objectType": "post",
+                    "meta": {"rank_math_description": new_desc},
+                },
+            )
+            if r2.status_code == 200:
+                fixed += 1
+                details.append({
+                    "page_id": page_id,
+                    "title": title,
+                    "old_length": len(current_desc),
+                    "new_length": len(new_desc),
+                    "new_desc": new_desc,
+                })
+                logger.info(
+                    f"Optimized meta description for [{page_id}] {title}: "
+                    f"{len(current_desc)} -> {len(new_desc)} chars"
+                )
+
+    return {"fixed": fixed, "details": details}
 
 
 def generate_alt_text(src: str, page_title: str) -> str:
@@ -501,8 +610,19 @@ async def auto_fix_safe_issues(audit_results: list) -> dict:
             page_fixes.extend(result4["fixes"])
 
         if page_fixes:
+
             fix_details.append({"page": page["title"], "page_id": page["page_id"], "fixes": page_fixes})
             total_fixes += len(page_fixes)
+
+    meta_result = await fix_long_meta_descriptions(audit_results)
+    if meta_result["fixed"] > 0:
+        total_fixes += meta_result["fixed"]
+        for d in meta_result["details"]:
+            fix_details.append({
+                "page": d["title"],
+                "page_id": d["page_id"],
+                "fixes": [f"Optimized meta description: {d['old_length']} -> {d['new_length']} chars"],
+            })
 
     return {
         "total_fixes": total_fixes,
