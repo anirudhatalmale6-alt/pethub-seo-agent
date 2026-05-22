@@ -210,6 +210,8 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(run_scheduled_schema_generation, "cron", day_of_week="mon,thu", hour="4", id="schema_biweekly")
     scheduler.add_job(run_scheduled_link_analysis, "cron", day_of_week="mon,wed,fri", hour="5", id="links_3x_week")
     scheduler.add_job(run_scheduled_freshness_check, "cron", day_of_week="tue,fri", hour="2", id="freshness_2x_week")
+    scheduler.add_job(run_scheduled_competitor_analysis, "cron", day_of_week="wed", hour="6", id="competitor_weekly")
+    scheduler.add_job(run_scheduled_readability_check, "cron", day_of_week="tue,sat", hour="4", minute="30", id="readability_2x_week")
     scheduler.start()
     await send_heartbeat()
     await log_message("info", "SEO Agent started")
@@ -475,3 +477,112 @@ async def seo_dashboard():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=settings.API_PORT, reload=False)
+
+
+
+
+# ── Scheduled upgrade jobs ──────────────────────────────────────────
+
+async def run_scheduled_competitor_analysis():
+    """Weekly competitor gap analysis."""
+    try:
+        from competitor_analyzer import analyze_competitor_gaps
+        await log_message("info", "Starting competitor gap analysis")
+        pages = []
+        if audit_state["last_audit"]:
+            for r in audit_state["last_audit"]["results"][:30]:
+                pages.append({
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "word_count": r.get("content", {}).get("word_count", 0),
+                    "seo_score": r.get("score", 0),
+                })
+        result = await analyze_competitor_gaps(pages)
+        audit_state["last_competitor_analysis"] = result
+        save_state()
+        await log_message("info", f"Competitor analysis complete: {len(result.get('gaps', []))} gaps found")
+    except Exception as e:
+        logger.error(f"Competitor analysis failed: {e}")
+        await log_message("error", f"Competitor analysis failed: {e}")
+
+
+async def run_scheduled_readability_check():
+    """Check readability of pages with low SEO scores."""
+    try:
+        from readability_enhancer import enhance_readability
+        await log_message("info", "Starting readability analysis")
+        results = []
+        if audit_state["last_audit"]:
+            low_score_pages = [r for r in audit_state["last_audit"]["results"] if r.get("score", 100) < 70]
+            for page in low_score_pages[:10]:
+                title = page.get("title", "")
+                content_html = page.get("content", {}).get("raw_html", "") or page.get("raw_content", "")
+                if content_html:
+                    analysis = await enhance_readability(title, content_html)
+                    analysis["page_id"] = page.get("page_id", 0)
+                    analysis["title"] = title
+                    results.append(analysis)
+        audit_state["last_readability"] = {
+            "analyzed_at": datetime.now(timezone.utc).isoformat(),
+            "total_analyzed": len(results),
+            "results": results,
+        }
+        save_state()
+        await log_message("info", f"Readability analysis complete: {len(results)} pages analyzed")
+    except Exception as e:
+        logger.error(f"Readability check failed: {e}")
+        await log_message("error", f"Readability check failed: {e}")
+
+
+# ── AI-Powered Upgrade Endpoints ─────────────────────────────────────
+
+@app.post("/api/competitor/analyze")
+async def analyze_competitors():
+    """Run AI competitor gap analysis."""
+    from competitor_analyzer import analyze_competitor_gaps
+    pages = []
+    if audit_state.get("last_audit"):
+        for r in audit_state["last_audit"]["results"][:30]:
+            pages.append({
+                "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "word_count": r.get("content", {}).get("word_count", 0),
+                "seo_score": r.get("score", 0),
+            })
+    result = await analyze_competitor_gaps(pages)
+    audit_state["last_competitor_analysis"] = result
+    save_state()
+    return result
+
+
+@app.get("/api/competitor/results")
+async def get_competitor_results():
+    """Get last competitor analysis results."""
+    return audit_state.get("last_competitor_analysis", {"message": "No competitor analysis yet. Run /api/competitor/analyze first."})
+
+
+@app.post("/api/readability/analyze")
+async def analyze_readability(page_id: int):
+    """Analyze readability of a specific page."""
+    from readability_enhancer import enhance_readability
+    import base64
+    import httpx
+    auth = "Basic " + base64.b64encode(f"{settings.WP_USER}:{settings.WP_APP_PASSWORD}".encode()).decode()
+    async with httpx.AsyncClient(timeout=15) as client:
+        for endpoint in ["pages", "posts"]:
+            r = await client.get(
+                f"{settings.WP_URL}/wp-json/wp/v2/{endpoint}/{page_id}",
+                headers={"Authorization": auth},
+            )
+            if r.status_code == 200:
+                data = r.json()
+                title = data.get("title", {}).get("rendered", "")
+                content = data.get("content", {}).get("rendered", "")
+                return await enhance_readability(title, content)
+    raise HTTPException(404, "Page not found")
+
+
+@app.get("/api/readability/results")
+async def get_readability_results():
+    """Get last batch readability analysis results."""
+    return audit_state.get("last_readability", {"message": "No readability data yet."})
