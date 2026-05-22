@@ -215,7 +215,7 @@ def find_link_opportunities(content_map: list) -> list:
             if other["slug"] and any(other["slug"] in link for link in existing):
                 continue
             score = compute_relevance(page, other)
-            if score > 0.3:
+            if score > 0.5:
                 candidates.append({"page": other, "score": score})
 
         candidates.sort(key=lambda c: c["score"], reverse=True)
@@ -240,15 +240,23 @@ def find_link_opportunities(content_map: list) -> list:
     return suggestions
 
 
+BAD_ANCHORS = {
+    "about", "number", "needs", "every", "online", "posts", "page",
+    "click", "here", "more", "read", "view", "visit", "check", "find",
+    "best", "guide", "must", "haves", "owner", "owners", "blog",
+    "policy", "terms", "contact", "home", "welcome", "essential",
+}
+
+
 def find_anchor_opportunity(content_html: str, target_page: dict) -> str | None:
     text = re.sub(r"<[^>]+>", " ", content_html).lower()
     title_words = re.sub(r"[^\w\s]", "", target_page["title"].lower()).split()
-    significant_words = [w for w in title_words if len(w) > 3]
+    significant_words = [w for w in title_words if len(w) > 3 and w not in BAD_ANCHORS]
 
     if not significant_words:
         return None
 
-    for phrase_len in range(min(len(significant_words), 4), 0, -1):
+    for phrase_len in range(min(len(significant_words), 4), 1, -1):
         for i in range(len(significant_words) - phrase_len + 1):
             phrase = " ".join(significant_words[i:i + phrase_len])
             if phrase in text:
@@ -257,11 +265,19 @@ def find_anchor_opportunity(content_html: str, target_page: dict) -> str | None:
                     content_html, re.IGNORECASE
                 ))
                 if not already_linked:
-                    return phrase.title() if phrase_len <= 2 else phrase.capitalize()
+                    return phrase.title()
 
-    slug_words = target_page["slug"].replace("-", " ")
-    if len(slug_words) > 3 and slug_words in text:
-        return slug_words.title()
+    slug_phrase = target_page["slug"].replace("-", " ")
+    slug_words_clean = [w for w in slug_phrase.split() if w not in BAD_ANCHORS and len(w) > 2]
+    if len(slug_words_clean) >= 2:
+        candidate = " ".join(slug_words_clean)
+        if candidate in text:
+            already_linked = bool(re.search(
+                r'<a\b[^>]*>[^<]*' + re.escape(candidate) + r'[^<]*</a>',
+                content_html, re.IGNORECASE
+            ))
+            if not already_linked:
+                return candidate.title()
 
     return None
 
